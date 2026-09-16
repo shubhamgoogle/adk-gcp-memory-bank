@@ -22,6 +22,9 @@ isolation model, and lock-in.
   agent's retrieval pattern.
 - Both agree on the key architectural point: **scope per user, never an
   instance per user.**
+- Memory Bank's scope is an **exact composite key** (verified below) — you
+  cannot widen a query at read time, which forces fan-out for cross-app reads
+  and deletions.
 
 ## Quota model: the structural difference
 
@@ -132,6 +135,62 @@ multi-dimensional slicing means encoding extra dimensions into `app_name`
 Both platforms converge on the same rule: **isolate with scope/entities, not
 with one instance per customer.** On Memory Bank that's enforced by the
 100-instance cap; on Mem0 it's simply how the product is designed.
+
+### Multi-dimensional filtering
+
+"Multi-dimensional filtering" means querying memories on **more than one
+labelled axis at a time, with boolean logic** — and, crucially, being able to
+leave some axes *unconstrained*.
+
+#### Verified: Memory Bank scope is an exact composite key
+
+Probing a live Memory Bank instance holding 3 memories at
+`{app_name: my_agent, user_id: alice}`:
+
+| Query scope | Results |
+| --- | --- |
+| `{"app_name": "my_agent", "user_id": "alice"}` | **3** |
+| `{"user_id": "alice"}` | **0** |
+| `{"app_name": "my_agent"}` | **0** |
+| `{}` | `400 INVALID_ARGUMENT` — scope is required |
+
+Dropping a key does **not** widen the search — it silently returns nothing.
+Scope behaves as a *partition key*, not a filter. This is by design, but it is
+easy to mistake a partial-scope query for "no memories exist".
+
+#### What the two models can express
+
+Tagging memories along three axes — **user**, **agent** (support vs sales), and
+**run** (a single troubleshooting session):
+
+| Question | Mem0 | Memory Bank |
+| --- | --- | --- |
+| Alice, from the support bot | `{"AND": [{"user_id":"alice"}, {"agent_id":"support"}]}` | ✅ exact scope |
+| Alice, across **all** agents | `{"user_id": "alice"}` | ❌ one query per agent, merged client-side |
+| Everything from one debugging run | `{"run_id": "r-42"}` | ❌ no such axis unless baked into scope |
+| Alice, from support **or** sales | `{"OR": [...]}` | ❌ two queries |
+
+The distinction: Memory Bank answers *"give me the memories at exactly this
+coordinate."* Mem0 answers *"give me memories matching these conditions."*
+
+#### Operational consequences on Memory Bank
+
+- **Cross-app queries require fan-out.** If one user talks to several agents
+  under different `app_name` values, there is no single query for "everything
+  we know about this user" — you enumerate and merge, multiplying read quota
+  consumption. Reads are already the tighter constraint.
+- **Deletion-by-user has the same shape.** A GDPR "forget me" request spanning
+  multiple apps means enumerating every scope that user could appear under.
+  If you go multi-app, maintain your own index of which scopes exist per user.
+- **Data-modeling tradeoff.** Either keep `app_name` stable across agents so a
+  user's memories stay in one partition (favouring cross-agent recall), or vary
+  it per agent (favouring isolation). You cannot defer this decision to query
+  time.
+
+> [!NOTE]
+> This is an ergonomics difference, not a capability ceiling. Any of these
+> groupings can be modelled on Memory Bank by choosing scope keys carefully.
+> What you cannot do is decide *at query time* to widen the search.
 
 ## Other axes
 
