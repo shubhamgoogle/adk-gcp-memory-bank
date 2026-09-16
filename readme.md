@@ -130,6 +130,36 @@ scope = {"app_name": "acme-corp", "user_id": "u123"}
 > Per-user instances are both architecturally wrong and physically impossible
 > at scale.
 
+### Where the scope values come from
+
+Nothing in `my_agent/agent.py` sets the scope. ADK derives it from the session
+and injects it on both the read and write paths:
+
+| Scope key | Source | Value in this project |
+| --- | --- | --- |
+| `app_name` | The agent folder name | `my_agent` |
+| `user_id` | The caller-supplied user on the session | e.g. `alice` |
+
+In `adk web`, `user_id` comes from the UI's user field. Over REST it is the URL
+segment — a call to `/apps/my_agent/users/alice/sessions/s1` is literally what
+produces `{"app_name": "my_agent", "user_id": "alice"}`.
+
+The injection happens inside ADK, not your code:
+
+- **Write:** `callback_context.add_events_to_memory(events=...)` →
+  `add_events_to_memory(app_name=session.app_name, user_id=session.user_id, ...)`
+- **Read:** `PreloadMemoryTool` → `tool_context.search_memory(query)` → same
+  two values
+
+Because both paths derive the scope identically, reads and writes always agree.
+
+> [!CAUTION]
+> **`user_id` is untrusted caller input — nothing validates it.** Whoever calls
+> your API chooses the memory partition. In production you must derive
+> `user_id` from an authenticated identity (a verified JWT subject, a signed
+> session cookie), never from a client-supplied field. Passing a raw client
+> value lets one user read another's memories by guessing an ID.
+
 ## Quotas that matter
 
 | Quota | Default | Interval | Container |
